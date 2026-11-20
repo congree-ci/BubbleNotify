@@ -1,0 +1,50 @@
+buildscript {
+    repositories {
+        google()
+        mavenCentral()
+    }
+    dependencies {
+        classpath 'com.android.tools.build:gradle:8.5.2'
+    }
+}
+
+apply plugin: 'com.android.application'
+
+android {
+    namespace 'io.github.freeform.bubble'
+    // Compile against the latest local platform so ColorOS 17 APIs remain available
+    // without changing target-runtime behavior for the injected module.
+    compileSdk 37
+
+    defaultConfig {
+        applicationId 'io.github.freeform.bubble'
+        minSdk 35
+        targetSdk 35
+        versionCode 144
+        versionName '1.10.88'
+    }
+
+    buildTypes {
+        release {
+            // No private release keystore is present in the workspace. Use the
+            // standard Android debug keystore so this signed build can still
+            // update the locally installed debug APK.
+            signingConfig signingConfigs.debug
+            minifyEnabled true
+            shrinkResources true
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'),
+                    'proguard-rules.pro'
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+}
+
+dependencies {
+    compileOnly 'io.github.libxposed:api:101.0.1'
+    implementation 'com.belerweb:pinyin4j:2.5.1'
+}

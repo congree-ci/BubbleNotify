@@ -1,0 +1,24 @@
+# Gradle / IDE
+.gradle/
+build/
+local.properties
+.idea/
+*.iml
+captures/
+
+# On-device build outputs
+build-ondevice/
+dist/
+*.apk
+*.idsig
+*.aab
+*.log
+
+# Signing material — never commit keystores
+keystore/
+*.jks
+*.keystore
+
+# OS noise
+.DS_Store
+Thumbs.db

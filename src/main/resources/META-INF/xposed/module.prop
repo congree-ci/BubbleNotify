@@ -1,0 +1,9 @@
+minApiVersion=101
+targetApiVersion=101
+staticScope=true
+id=bubble-notify
+name=Bubble Notifications
+version=1.10.88
+versionCode=144
+author=Congree
+description=Material bubble notifications with ColorOS 16/17 freeform launch

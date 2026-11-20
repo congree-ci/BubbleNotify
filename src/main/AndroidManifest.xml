@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+    <uses-permission android:name="android.permission.REORDER_TASKS" />
+    <uses-permission android:name="android.permission.VIBRATE" />
+    <uses-permission
+        android:name="android.permission.QUERY_ALL_PACKAGES"
+        tools:ignore="QueryAllPackagesPermission" />
+
+    <application
+        android:allowBackup="false"
+        android:directBootAware="true"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:icon="@mipmap/ic_bubble"
+        android:label="Bubble Notifications"
+        android:roundIcon="@mipmap/ic_bubble"
+        android:theme="@style/AppTheme">
+        <activity
+            android:name=".BubbleSettingsActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="de.robv.android.xposed.category.MODULE_SETTINGS" />
+            </intent-filter>
+        </activity>
+        <!-- 保留 Compose 页面以兼容旧链接，但不作为默认设置入口。 -->
+        <activity
+            android:name=".BubblePlacementActivity"
+            android:exported="false"
+            android:theme="@style/PlacementTheme" />
+        <activity
+            android:name=".AppPickerActivity"
+            android:exported="false"
+            android:theme="@style/PlacementTheme" />
+        <provider
+            android:name=".BubbleConfigProvider"
+            android:authorities="io.github.freeform.bubble.config"
+            android:directBootAware="true"
+            android:exported="true"
+            tools:ignore="ExportedContentProvider" />
+    </application>
+</manifest>

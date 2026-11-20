@@ -1,0 +1,207 @@
+--- a/src/main/java/io/github/freeform/bubble/BubbleNotificationHook.java
++++ b/src/main/java/io/github/freeform/bubble/BubbleNotificationHook.java
+@@ -98,6 +98,12 @@
+     private static final String KEEP_AWAKE_CHANNEL_ID = "bubble_keep_awake_important";
+     private static final int KEEP_AWAKE_NOTIFICATION_ID = 0x4241574b;
+     private static final long DUPLICATE_WINDOW_MS = 1200L;
++    /**
++     * ColorOS multi-app hint read by OplusMultiAppManagerService.getCachedUserId():
++     * it pins the launch to one app instance and skips the multi-app chooser.
++     */
++    private static final String MULTI_APP_CACHED_USER_ID_EXTRA =
++            "oplus.intent.extra.cached_userId";
+     /** How many queued bubbles the expanded fan shows at once. */
+     private static final int MAX_FAN_ITEMS = 6;
+     /** ColorOS 17's native Live Alert notification transport. */
+@@ -2116,7 +2122,8 @@
+             if (isDuplicate(sbn.getKey())) return;
+ 
+             NotificationPayload payload = buildPayload(sbn, notification);
+-            showBubble(payload, notification.contentIntent, packageName, sbn.getKey());
++            showBubble(payload, notification.contentIntent, packageName, sbn.getKey(),
++                    sbn.getUserId());
+         } catch (Throwable error) {
+             moduleLog(Log.ERROR, "notification handling failed", error);
+         }
+@@ -2271,9 +2278,9 @@
+     }
+ 
+     private void showBubble(NotificationPayload payload, PendingIntent contentIntent,
+-                            String packageName, String notificationKey) {
++                            String packageName, String notificationKey, int userId) {
+         QueuedNotification queued = new QueuedNotification(
+-                payload, contentIntent, packageName, notificationKey);
++                payload, contentIntent, packageName, notificationKey, userId);
+         if (!TextUtils.isEmpty(notificationKey)) {
+             notificationQueue.removeIf(item -> notificationKey.equals(item.notificationKey));
+         }
+@@ -3068,7 +3075,8 @@
+         }
+         Drawable icon = resolveTickerIcon(sbn, notification);
+         activeTickerNotification = new QueuedNotification(
+-                payload, notification.contentIntent, sbn.getPackageName(), key);
++                payload, notification.contentIntent, sbn.getPackageName(), key,
++                sbn.getUserId());
+         boolean shownInFluidCloud = false;
+         if (statusScrollMode == BubbleConfig.STATUS_SCROLL_FLUID_CLOUD) {
+             if (fluidCloudNotificationOverlay == null) {
+@@ -3415,9 +3423,25 @@
+             } catch (Throwable error) {
+                 moduleLog(Log.DEBUG, "SystemUI notification click unavailable", error);
+             }
++            // A notification posted by a ColorOS app clone (应用分身) belongs to a
++            // secondary Android user. Launching it by package name from SystemUI's
++            // user 0 context makes OplusMultiAppManagerService treat the start as an
++            // ambiguous multi-app launch and show its "选择应用" resolver. Re-send the
++            // notification's own PendingIntent instead: it is bound to the clone user,
++            // so the target instance is unambiguous. The freeform ticket still forces
++            // the small-window launch in system_server.
++            if (isSecondaryUser(entry.userId) && entry.contentIntent != null) {
++                prepareFreeformTicket(entry.packageName);
++                moduleLog(Log.INFO, "cross-user notification opened through content intent: "
++                        + entry.packageName + " user=" + entry.userId);
++                openNotificationFullscreen(entry.contentIntent, entry.packageName);
++                return;
++            }
+             if (prepareFreeformTicket(entry.packageName)) {
+-                launchPackageInFreeform(entry.packageName, createFreeformLaunchOptions());
+-                moduleLog(Log.INFO, "freeform launch requested for " + entry.packageName);
++                launchPackageInFreeform(entry.packageName, createFreeformLaunchOptions(),
++                        entry.userId);
++                moduleLog(Log.INFO, "freeform launch requested for " + entry.packageName
++                        + (entry.userId < 0 ? "" : " user=" + entry.userId));
+                 return;
+             }
+             openNotificationFullscreen(entry.contentIntent, entry.packageName);
+@@ -3527,9 +3551,17 @@
+         }
+     }
+ 
+-    private void launchPackageInFreeform(String str, Bundle bundle) {
++    /**
++     * Launches the package's launcher activity in freeform. When the notification was
++     * posted by a secondary user (a ColorOS app clone), the launch has to run in that
++     * user and carry the multi-app hint, otherwise OplusMultiAppManagerService shows the
++     * "选择应用" multi-app resolver before the app starts.
++     */
++    private void launchPackageInFreeform(String str, Bundle bundle, int userId) {
+         try {
+-            Intent launchIntentForPackage = this.systemUiContext.getPackageManager().getLaunchIntentForPackage(str);
++            Context launchContext = contextForUser(userId);
++            Intent launchIntentForPackage = launchContext.getPackageManager()
++                    .getLaunchIntentForPackage(str);
+             if (launchIntentForPackage == null) {
+                 return;
+             }
+@@ -3536,5 +3568,6 @@
++            applyMultiAppLaunchHint(launchIntentForPackage, userId);
+             launchIntentForPackage.addFlags(402653184);
+-            this.systemUiContext.startActivity(launchIntentForPackage, bundle);
++            launchContext.startActivity(launchIntentForPackage, bundle);
+         } catch (Throwable th) {
+             moduleLog(Log.ERROR, "fallback freeform launch failed for " + str, th);
+         }
+@@ -3541,5 +3574,62 @@
+     }
+ 
++    /**
++     * Pins a package launch to the notification's app instance for ColorOS multi-app.
++     * <ul>
++     *   <li>{@code oplus.intent.extra.cached_userId} carries the instance user for the
++     *       resolution step (user 0 = the original app, 999 = a clone).</li>
++     *   <li>{@code OPLUS_FLAG_MULTI_APP_SKIP_CHOOSER} stops
++     *       {@code OplusMultiAppManagerService.shouldShowResolverActivity} from replacing
++     *       the launch with the "选择应用" resolver when the target package has clones.</li>
++     * </ul>
++     * Both identifiers are OPPO framework internals; every step is best effort so a
++     * non-ColorOS host simply ignores the hint.
++     */
++    private void applyMultiAppLaunchHint(Intent intent, int userId) {
++        if (intent == null) return;
++        if (userId >= 0) {
++            intent.putExtra(MULTI_APP_CACHED_USER_ID_EXTRA, userId);
++        }
++        try {
++            Class<?> extClass = Class.forName("android.content.IIntentExt");
++            int skipChooser = extClass.getField("OPLUS_FLAG_MULTI_APP_SKIP_CHOOSER")
++                    .getInt(null);
++            Object ext = Intent.class.getMethod("getIntentExt").invoke(intent);
++            if (ext == null) return;
++            ext.getClass().getMethod("addOplusFlags", int.class).invoke(ext, skipChooser);
++        } catch (Throwable error) {
++            moduleLog(Log.DEBUG, "multi-app launch hint unavailable", error);
++        }
++    }
++
++    /** Context for the user that owns the notification; the current user reuses SystemUI's. */
++    private Context contextForUser(int userId) {
++        if (!isSecondaryUser(userId)) {
++            return systemUiContext;
++        }
++        try {
++            Method method = Context.class.getMethod(
++                    "createContextAsUser", UserHandle.class, int.class);
++            Object context = method.invoke(systemUiContext,
++                    UserHandle.getUserHandleForUid(userId * 100000), 0);
++            if (context instanceof Context) {
++                return (Context) context;
++            }
++        } catch (Throwable error) {
++            moduleLog(Log.WARN, "unable to create context for user " + userId, error);
++        }
++        return systemUiContext;
++    }
++
++    private boolean isSecondaryUser(int userId) {
++        return userId >= 0 && userId != currentUserId();
++    }
++
++    /** SystemUI runs as the device owner; userId is derived from the process uid. */
++    private int currentUserId() {
++        return android.os.Process.myUid() / 100000;
++    }
++
+     private Drawable resolvePersonIcon(Notification notification, Context context) {
+         Drawable drawableLoadDrawable;
+         Drawable drawableLoadDrawable2;
+@@ -4475,6 +4565,8 @@
+         final String notificationKey;
+         final Runnable directAction;
+         final int timeoutSeconds;
++        /** Posting user of the notification; differs from the owner for ColorOS app clones. */
++        final int userId;
+ 
+         QueuedNotification(NotificationPayload payload, PendingIntent contentIntent,
+                            String packageName, String notificationKey) {
+@@ -4481,4 +4573,4 @@
+-            this(payload, contentIntent, packageName, notificationKey, null, -1);
++            this(payload, contentIntent, packageName, notificationKey, null, -1, -1);
+         }
+ 
+         QueuedNotification(NotificationPayload payload, PendingIntent contentIntent,
+@@ -4485,5 +4577,17 @@
++                           String packageName, String notificationKey, int userId) {
++            this(payload, contentIntent, packageName, notificationKey, null, -1, userId);
++        }
++
++        QueuedNotification(NotificationPayload payload, PendingIntent contentIntent,
+                            String packageName, String notificationKey, Runnable directAction,
+                            int timeoutSeconds) {
++            this(payload, contentIntent, packageName, notificationKey, directAction,
++                    timeoutSeconds, -1);
++        }
++
++        QueuedNotification(NotificationPayload payload, PendingIntent contentIntent,
++                           String packageName, String notificationKey, Runnable directAction,
++                           int timeoutSeconds, int userId) {
+             this.payload = payload;
+             this.contentIntent = contentIntent;
+             this.packageName = packageName;
+@@ -4490,6 +4594,7 @@
+             this.notificationKey = notificationKey;
+             this.directAction = directAction;
+             this.timeoutSeconds = timeoutSeconds;
++            this.userId = userId;
+         }
+     }
+ 

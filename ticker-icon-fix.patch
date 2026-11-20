@@ -1,0 +1,123 @@
+--- a/src/main/java/io/github/freeform/bubble/BubbleNotificationHook.java
++++ b/src/main/java/io/github/freeform/bubble/BubbleNotificationHook.java
+@@ -21,6 +21,7 @@
+ import android.content.pm.PackageManager;
+ import android.content.pm.ShortcutInfo;
+ import android.database.ContentObserver;
++import android.graphics.drawable.AdaptiveIconDrawable;
+ import android.graphics.drawable.Drawable;
+ import android.graphics.drawable.Icon;
+ import android.graphics.Rect;
+@@ -3176,10 +3177,109 @@
+ 
+     /** The status ticker must use the compact monochrome smallIcon, never a large/contact icon. */
+     private Drawable resolveTickerIcon(StatusBarNotification sbn, Notification notification) {
+-        // Glyph supplies the final replacement descriptor used by SystemUI.
+-        // Prefer it so the ticker cannot fall back to a raw solid app square.
+-        Drawable icon = resolveGlyphStatusBarIcon(sbn);
++        // The icon that SystemUI currently renders in its own status bar is the best
++        // source: it has already gone through the host's icon pipeline (including
++        // ColorOS 通知图标增强 / host icon replacement and tinting), so it reuses exactly
++        // the system's monochrome glyph instead of the raw app icon.
++        Drawable icon = resolveStatusBarIconViewIcon(sbn);
++        if (icon != null) return monochromeTickerIcon(icon);
++        // Older ColorOS 通知图标增强 builds (<= 1.x) exposed a replacement cache to
++        // other SystemUI modules. 2.x no longer has that cache class and instead
++        // rewrites the StatusBarIconView drawable, which the lookup above already
++        // covers; keep this only as a fallback for older module installs.
++        icon = resolveLegacyIconEnhancementCache(sbn);
+         if (icon == null) icon = resolveStatusBarIcon(sbn, notification);
++        return monochromeTickerIcon(icon);
++    }
++
++    /**
++     * Copies the drawable held by the SystemUI StatusBarIconView that currently shows
++     * this notification. The status-bar icon view owns the processed (tinted/themed)
++     * small icon: ColorOS 通知图标增强 (com.fankes.coloros.notify 2.x) rewrites exactly
++     * this view through StatusBarIconView.setIcon/setImageDrawable, so this is the
++     * reliable way to get the same monochrome glyph the system displays. The lookup
++     * is keyed by the notification key, so a recycled slot can never lend its icon
++     * to another notification.
++     */
++    private Drawable resolveStatusBarIconViewIcon(StatusBarNotification sbn) {
++        if (sbn == null || sbn.getKey() == null) return null;
++        View root = statusBarRoot != null ? statusBarRoot : lastSearchedRoot;
++        if (root == null) return null;
++        try {
++            return findStatusBarIconViewDrawable(root, sbn.getKey(), 0);
++        } catch (Throwable error) {
++            moduleLog(Log.DEBUG, "status-bar icon view lookup failed", error);
++            return null;
++        }
++    }
++
++    private Drawable findStatusBarIconViewDrawable(View view, String key, int depth) {
++        if (view == null || depth > 12) return null;
++        if (view instanceof android.widget.ImageView
++                && view.getClass().getName().contains("StatusBarIconView")) {
++            try {
++                StatusBarNotification shown = statusBarNotificationOf(view);
++                if (shown != null && key.equals(shown.getKey())) {
++                    Drawable drawable = ((android.widget.ImageView) view).getDrawable();
++                    if (drawable != null) return cloneDrawable(drawable);
++                }
++            } catch (Throwable ignored) {
++                // Not a stock StatusBarIconView, or the slot has no notification yet.
++            }
++        }
++        if (view instanceof ViewGroup) {
++            ViewGroup group = (ViewGroup) view;
++            for (int i = 0; i < group.getChildCount(); i++) {
++                Drawable found = findStatusBarIconViewDrawable(group.getChildAt(i), key, depth + 1);
++                if (found != null) return found;
++            }
++        }
++        return null;
++    }
++
++    private StatusBarNotification statusBarNotificationOf(View view) {
++        for (Class<?> type = view.getClass(); type != null && type != View.class;
++             type = type.getSuperclass()) {
++            try {
++                Method method = type.getDeclaredMethod("getNotification");
++                method.setAccessible(true);
++                Object value = method.invoke(view);
++                if (value instanceof StatusBarNotification) {
++                    return (StatusBarNotification) value;
++                }
++                return null;
++            } catch (NoSuchMethodException ignored) {
++                // keep walking up to the declaring class
++            } catch (Throwable ignored) {
++                return null;
++            }
++        }
++        return null;
++    }
++
++    /**
++     * Notification small icons are allowed to be adaptive icons. Drawing a whole
++     * adaptive icon at ticker size paints its background layer as a filled (single
++     * colour) square, which is the intermittent "单色方块". Prefer the monochrome
++     * layer, then the foreground layer, so only the glyph shape is drawn.
++     */
++    private Drawable monochromeTickerIcon(Drawable icon) {
++        if (!(icon instanceof AdaptiveIconDrawable)) return icon;
++        try {
++            AdaptiveIconDrawable adaptive = (AdaptiveIconDrawable) icon;
++            Drawable monochrome = adaptive.getMonochrome();
++            if (monochrome != null) {
++                return monochrome.getConstantState() == null ? monochrome
++                        : monochrome.getConstantState().newDrawable().mutate();
++            }
++            Drawable foreground = adaptive.getForeground();
++            if (foreground != null) {
++                return foreground.getConstantState() == null ? foreground
++                        : foreground.getConstantState().newDrawable().mutate();
++            }
++        } catch (Throwable error) {
++            moduleLog(Log.DEBUG, "adaptive ticker icon normalization failed", error);
++        }
+         return icon;
+     }
+ 
